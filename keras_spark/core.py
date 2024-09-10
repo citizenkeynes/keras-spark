@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from pyspark.sql import SparkSession
 from pyspark import SparkFiles
 import collections
+from collections.abc import Iterable
 import pandas as pd
 from pyspark.sql.types import StructType, StructField, ArrayType, IntegerType, FloatType, StringType, DoubleType
 import os
@@ -84,8 +85,11 @@ class PetaStormReader(Reader):
 
         #FIXME: fetch a row - and make sure dimensions are aligned with model inputs' dimensions
         def flatten(x):
-            if isinstance(x, collections.Iterable):
-                return [a for i in x for a in flatten(i)]
+            if isinstance(x, Iterable) and not isinstance(x, (str, bytes)):
+                result = []
+                for i in x:
+                    result.extend(flatten(i))
+                return result
             else:
                 return [x]
         def get_primitive(type):
