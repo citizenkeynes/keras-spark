@@ -3,6 +3,8 @@ from collections.abc import Iterator
 from pyspark.sql import SparkSession
 from pyspark import SparkFiles
 import collections
+import shutil
+import zipfile
 from collections.abc import Iterable
 import pandas as pd
 from pyspark.sql.types import StructType, StructField, ArrayType, IntegerType, FloatType, StringType, DoubleType
@@ -248,33 +250,43 @@ class KerasOnSparkPredict:
             raise Exception("this keras model has an unknown output type ")
 
     def predict(self, spark_df, model, use_spark_files=True):
-
+        # Convert Keras model to a dictionary if needed
         model = self.keras_output_to_dict(model)
         spark = SparkSession.builder.getOrCreate()
 
+        # Enable/Disable PyArrow for Spark
         if self.use_pyarrow:
             spark.conf.set("spark.sql.execution.arrow.enabled", "true")
             spark.conf.set('spark.sql.execution.arrow.maxRecordsPerBatch', self.maxRecordsPerBatch)
         else:
             spark.conf.set("spark.sql.execution.arrow.enabled", "false")
 
-        temp_file_name=next(tempfile._get_candidate_names())
-        mpath = f"{temp_file_name}"#.keras"
+        # Generate a temporary file name for saving the model
+        temp_file_name = next(tempfile._get_candidate_names())
+        mpath = f"{temp_file_name}"
         model.save(mpath)
 
+        # Create a ZIP file for the saved model directory
+        zip_model_path = f"{mpath}.zip"
+        shutil.make_archive(mpath, 'zip', mpath)
+
         if use_spark_files:
-            spark.sparkContext.addFile(mpath,recursive=True)
+            # Add the ZIP file to Spark
+            spark.sparkContext.addFile(zip_model_path, recursive=True)
         else:
+            # Save the model structure and weights in-memory for non-spark-file usage
             mweights = model.get_weights()
             mjson = model.to_json()
 
         def raw_predict(iterator: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
-
-            #from keras.src.saving import serialization_lib
-            #serialization_lib.enable_unsafe_deserialization()
-
+            # Unzip the model before loading it
             if use_spark_files:
-                model = tf.keras.models.load_model(SparkFiles.get(mpath), custom_objects={'tf': tf})
+                zipped_model_path = SparkFiles.get(f"{temp_file_name}.zip")
+                with zipfile.ZipFile(zipped_model_path, 'r') as zip_ref:
+                    extracted_path = tempfile.mkdtemp()
+                    zip_ref.extractall(extracted_path)
+
+                model = tf.keras.models.load_model(extracted_path, custom_objects={'tf': tf})
             else:
                 model = tf.keras.models.model_from_json(mjson, custom_objects={'tf': tf})
                 model.set_weights(mweights)
@@ -282,12 +294,15 @@ class KerasOnSparkPredict:
             reader = PlainPythonReader(model)
 
             for pdf_full in iterator:
-                td = reader.pandas_to_tensor_dict(pdf_full,as_dict=True,only_inputs=True)
+                td = reader.pandas_to_tensor_dict(pdf_full, as_dict=True, only_inputs=True)
                 dict_output = model(td)
-                yield pd.DataFrame({k:v.numpy().tolist() for k,v in dict_output.items()})
+                yield pd.DataFrame({k: v.numpy().tolist() for k, v in dict_output.items()})
 
+        # Infer output schema based on the Keras model
         type_str = self.infer_output_schema_from_keras(model)
         reader = PlainPythonReader(model)
         col_struct = F.struct(*reader.input_names)
-        op =  spark_df.withColumn("model_output", F.pandas_udf(type_str)(raw_predict)(col_struct)).cache()
+
+        # Apply the UDF
+        op = spark_df.withColumn("model_output", F.pandas_udf(type_str)(raw_predict)(col_struct)).cache()
         return op
