@@ -259,7 +259,7 @@ class KerasOnSparkPredict:
             spark.conf.set("spark.sql.execution.arrow.enabled", "false")
 
         temp_file_name=next(tempfile._get_candidate_names())
-        mpath = f"{temp_file_name}.keras"
+        mpath = f"{temp_file_name}"#.keras"
         model.save(mpath)
 
         if use_spark_files:
