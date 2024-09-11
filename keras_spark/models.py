@@ -3,7 +3,7 @@ from keras_spark.core import PetaStormReader,KerasOnSparkPredict,PlainPythonRead
 import keras_spark
 from pyspark.sql import DataFrame as SparkDataFrame
 from typing import Any, Dict
-
+import threading
 
 class KerasSparkModel(tf.keras.Model):
     """
@@ -41,18 +41,31 @@ class KerasSparkModel(tf.keras.Model):
         :param kwargs: Additional arguments passed to the `fit` method of the Keras Model.
         """
         if isinstance(x, SparkDataFrame):
+
+            dataset_container = []
             # Convert Spark DataFrame to TensorFlow dataset using SparkDsTFDs adapter
-            adapter = getattr(keras_spark.core,reader_type)(self)
-            dataset = adapter.convert(
-                x,
-                cache_path=cache_path,
-                nr_partitions=nr_partitions or x.rdd.getNumPartitions(),
-                nr_workers=nr_workers,
-                postpro_fn=postpro_fn,
-                batch_size=kwargs['batch_size']
-            )
-            # Call the base class fit method with the converted dataset
-            super(KerasSparkModel, self).fit(dataset, **kwargs)
+            def run_convert():
+                adapter = getattr(keras_spark.core, "PetaStormReader")(self)
+                dataset = adapter.convert(
+                    x,
+                    cache_path=cache_path,
+                    nr_partitions=nr_partitions or x.rdd.getNumPartitions(),
+                    nr_workers=nr_workers,
+                    postpro_fn=postpro_fn,
+                    batch_size=kwargs['batch_size']
+                )
+                dataset_container.append(dataset)
+
+            # Create and start the thread
+            convert_thread = threading.Thread(target=run_convert)
+            convert_thread.start()
+
+            # Optionally, wait for the thread to complete
+            convert_thread.join()
+            if dataset_container:
+                super(KerasSparkModel, self).fit(dataset_container[0], **kwargs)
+            else:
+                raise Exception("conversion has failed")
         else:
             # Call the base class fit method directly if x is not a Spark DataFrame
             super(KerasSparkModel, self).fit(x, y, **kwargs)
