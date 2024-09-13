@@ -1,5 +1,7 @@
 from threading import Thread
 import time
+import hashlib
+import json
 
 class SparkJobPool:
     #class to faciliate batchwise processing of a larger dataset
@@ -73,3 +75,37 @@ class SparkJobPool:
             time.sleep(self.update_interval)
             print("Remaining tasks:", self.tasks)
             print("Running jobs:", str(all_progresses))
+
+
+def hash_keras_model(model):
+    """
+    Creates an MD5 hash for a given Keras model based on its architecture (or config) and weights.
+
+    Parameters:
+    model (tf.keras.Model): The Keras model to hash.
+
+    Returns:
+    str: A hexadecimal MD5 hash of the model.
+    """
+    hash_md5 = hashlib.md5()
+
+    # Try to hash model architecture via to_json()
+    try:
+        model_json = model.to_json()
+        hash_md5.update(model_json.encode('utf-8'))
+    except Exception as e:
+        print(f"model.to_json() failed: {e}. Using model configuration instead.")
+
+        # Fall back to model.get_config() if to_json() fails
+        model_config = json.dumps(model.get_config())
+        hash_md5.update(model_config.encode('utf-8'))
+
+    # Hash model weights
+    weights = model.get_weights()
+
+    # Convert the weights into a byte string
+    weights_json = json.dumps([w.tolist() for w in weights])
+    hash_md5.update(weights_json.encode('utf-8'))
+
+    return hash_md5.hexdigest()
+
