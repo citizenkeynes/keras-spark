@@ -19,7 +19,7 @@ home_path = os.path.expanduser( '~' )
 
 class Reader(ABC):
 
-    def __init__(self,model):
+    def __init__(self,model, reuse_cached):
 
         def unify_input(keras_input):
             if type(keras_input) == list:
@@ -33,6 +33,7 @@ class Reader(ABC):
         self.input_names =  [layer.name for layer in unify_input(self.model.input)]
         self.output_names = list(self.model.output_names)
         self.shape_dict,self.type_dict = self.get_dicts()
+        self.reuse_cached=reuse_cached
 
     def get_dicts(self):
         shape_dict={}
@@ -52,18 +53,29 @@ class Reader(ABC):
         return (shape_dict,type_dict)
 
     def save(self, spark_df, cache_path, nr_partitions):
+
+        get_df_hash = lambda df: str(df.select(F.hash(F.struct(*df.columns)).alias("h")).agg(F.min("h")).first()[0])
         cache_path = cache_path or "file://" + home_path
 
-        temp_name = next(tempfile._get_candidate_names())
-        save_path = os.path.join(cache_path,temp_name)
+        if self.reuse_cached:
+            min_hash = get_df_hash(spark_df)
+            save_path = os.path.join(cache_path,min_hash)
+            try:
+                existing_min_hash = get_df_hash(spark_df.sql_ctx.read.parquet(save_path))
+            except:
+                existing_min_hash=None
+        else:
+            temp_name = next(tempfile._get_candidate_names())
+            save_path = os.path.join(cache_path,temp_name)
 
         if nr_partitions is None:
             nr_partitions = spark_df.rdd.getNumPartitions()
 
-        spark_df \
-            .repartition(nr_partitions) \
-            .select(*(self.input_names + self.output_names)) \
-            .write.mode("overwrite").parquet(save_path)
+        if  self.reuse_cached is False or (self.reuse_cached and min_hash!=existing_min_hash):
+            spark_df \
+                .repartition(nr_partitions) \
+                .select(*(self.input_names + self.output_names)) \
+                .write.mode("overwrite").parquet(save_path)
 
         parquet_files = spark_df.sql_ctx.read.parquet(save_path)\
             .select(F.input_file_name()) \
@@ -79,8 +91,8 @@ class Reader(ABC):
 
 class PetaStormReader(Reader):
 
-    def __init__(self,model):
-        super(PetaStormReader, self).__init__(model)
+    def __init__(self,model,reuse_cache=False):
+        super(PetaStormReader, self).__init__(model,reuse_cache)
 
 
     def flatten_arrays_to_1d(self,df):
@@ -107,7 +119,7 @@ class PetaStormReader(Reader):
                 df = df.withColumn(field.name,F.udf(f"array<{primitive_type}>")(flatten)(F.col(field.name)))
         return df
 
-    def convert(self,spark_df,nr_partitions=1,batch_size=32,nr_workers=10,postpro_fn=None,partition_col="partition_id",cache_path=None):
+    def convert(self,spark_df,nr_partitions=None,batch_size=32,nr_workers=10,postpro_fn=None,partition_col="partition_id",cache_path=None):
 
         files = self.save(self.flatten_arrays_to_1d(spark_df),cache_path=cache_path,nr_partitions=nr_partitions)
 
@@ -135,8 +147,8 @@ class PetaStormReader(Reader):
 
 
 class PlainPythonReader(Reader):
-    def __init__(self,model):
-        super(PlainPythonReader, self).__init__(model)
+    def __init__(self,model,reuse_cache=False):
+        super(PlainPythonReader, self).__init__(model,reuse_cache)
 
     def pandas_to_tensor_dict(self, pandas_df, as_dict=False, only_inputs=False):
         op = {}
@@ -159,7 +171,7 @@ class PlainPythonReader(Reader):
         else:
             return tuple([op[name] for name in input_names + output_names])
 
-    def convert(self,spark_df,nr_partitions=1,batch_size=32,nr_workers=10,postpro_fn=None,partition_col="partition_id",cache_path=None):
+    def convert(self,spark_df,nr_partitions=None,batch_size=32,nr_workers=10,postpro_fn=None,partition_col="partition_id",cache_path=None):
 
         files = self.save(spark_df, cache_path=cache_path, nr_partitions=nr_partitions)
 
@@ -201,7 +213,7 @@ class PlainPythonReader(Reader):
 
 class KerasOnSparkPredict:
 
-    def __init__(self,use_pyarrow,maxRecordsPerBatch):
+    def __init__(self,use_pyarrow=True,maxRecordsPerBatch=5000):
         self.use_pyarrow = use_pyarrow
         self. maxRecordsPerBatch=maxRecordsPerBatch
 

@@ -1,3 +1,4 @@
+import os
 from unittest import TestCase
 from keras_spark.core import *
 import tensorflow as tf
@@ -171,7 +172,8 @@ class TestPlainReader(TestCase):
         m = tf.keras.models.Model(i, [cast1(i), cast2(i)])
 
         dataset = PlainPythonReader(model=m)\
-            .convert(spark.createDataFrame(pdf),partition_col="partition_id",nr_partitions=10,batch_size=10)
+            .convert(spark.createDataFrame(pdf),partition_col="partition_id",nr_partitions=10,batch_size=10,
+                     postpro_fn=lambda ds: ds)
 
         feature_1_r,op1_r = [],[]
         batch_counter=0
@@ -237,3 +239,56 @@ class TestPetaStormReader(TestCase):
 
         assert (list(next(iter(df))[0]["feature1"].shape) == [64, 10, 2, 2])
         assert (list(next(iter(df))[1].shape) == [64, 10])
+
+    def test_reuse_1(self):
+        pdf = pd.DataFrame({
+            "feature1": tf.random.normal([100, 10, 2, 2]).numpy().tolist()
+            , "op1": tf.random.normal([100, 10]).numpy().tolist()
+        })
+
+        i = tf.keras.layers.Input([10, 2, 2], name="feature1")
+        res = tf.keras.layers.Lambda(lambda x: tf.reshape(x, [-1,10*2*2]), name="res")
+        m = tf.keras.models.Model(i, tf.keras.layers.Dense(10,name="op1")(res(i)))
+
+        adapter = PetaStormReader(model=m,reuse_cache=True)
+
+        adapter.save(spark.createDataFrame(pdf), cache_path=os.getcwd()+"/testfolder",nr_partitions=1)
+
+        dir_a = os.listdir(os.getcwd()+"/testfolder")
+
+        adapter.save(spark.createDataFrame(pdf), cache_path=os.getcwd()+"/testfolder/",nr_partitions=1)
+
+        dir_b=os.listdir(os.getcwd() + "/testfolder")
+
+        shutil.rmtree(os.getcwd()+"/testfolder")
+
+        assert (str(dir_a)==str(dir_b))
+
+    def test_reuse_2(self):
+        pdf = pd.DataFrame({
+            "feature1": tf.random.normal([100, 10, 2, 2]).numpy().tolist()
+            , "op1": tf.random.normal([100, 10]).numpy().tolist()
+        })
+
+        i = tf.keras.layers.Input([10, 2, 2], name="feature1")
+        res = tf.keras.layers.Lambda(lambda x: tf.reshape(x, [-1,10*2*2]), name="res")
+        m = tf.keras.models.Model(i, tf.keras.layers.Dense(10,name="op1")(res(i)))
+
+        adapter = PetaStormReader(model=m,reuse_cache=False)
+
+        adapter.save(spark.createDataFrame(pdf), cache_path=os.getcwd()+"/testfolder",nr_partitions=1)
+
+        dir_a = os.listdir(os.getcwd()+"/testfolder")
+
+        pdf = pd.DataFrame({
+            "feature1": tf.random.normal([100, 10, 2, 2]).numpy().tolist()
+            , "op1": tf.random.normal([100, 10]).numpy().tolist()
+        })
+
+        adapter.save(spark.createDataFrame(pdf), cache_path=os.getcwd()+"/testfolder/",nr_partitions=1)
+
+        dir_b=os.listdir(os.getcwd() + "/testfolder")
+
+        shutil.rmtree(os.getcwd()+"/testfolder")
+
+        assert (str(dir_a)!=str(dir_b))

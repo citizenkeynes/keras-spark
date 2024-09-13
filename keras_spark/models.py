@@ -28,6 +28,7 @@ class KerasSparkModel(tf.keras.Model):
         cache_path:str = None,
         postpro_fn=None,
         reader_type="PetaStormReader",
+        reuse_cache=False,
         **kwargs: Dict[str, Any]
     ) -> None:
         """
@@ -45,7 +46,7 @@ class KerasSparkModel(tf.keras.Model):
             dataset_container = []
             # Convert Spark DataFrame to TensorFlow dataset using SparkDsTFDs adapter
             def run_convert():
-                adapter = getattr(keras_spark.core, "PetaStormReader")(self)
+                adapter = getattr(keras_spark.core, "PetaStormReader")(self,reuse_cache=reuse_cache)
                 dataset = adapter.convert(
                     x,
                     cache_path=cache_path,

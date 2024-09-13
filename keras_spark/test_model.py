@@ -144,7 +144,7 @@ class TestTrain(unittest.TestCase):
             model = KerasSparkModel(inputs=input, outputs=nn(hashl(input)))
             model.compile(optimizer='adam', loss='binary_crossentropy')
 
-        model.fit(spark_df, batch_size=100, epochs=50, nr_partitions=2, reader_type="PetaStormReader")
+        model.fit(spark_df, batch_size=100, epochs=100, nr_partitions=2, reader_type="PetaStormReader")
 
         preds = model.predict(spark_df)
 
