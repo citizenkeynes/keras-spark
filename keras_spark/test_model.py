@@ -1,13 +1,29 @@
+import shutil
 import unittest
 import tensorflow as tf
 from pyspark.sql import SparkSession
 from keras_spark.models import KerasSparkModel
 import pyspark.sql.functions as F
 import pandas as pd
-
+import os
 spark = SparkSession.builder.master("local").appName("Test").getOrCreate()
+def cleanup():
+    a = os.listdir(os.getcwd())
+    for file in a:
+        if ".zip" == file[-4:]:
+         os.remove(os.path.join(os.getcwd(),file))
+         try:
+            shutil.rmtree(os.path.join(os.getcwd(),file).replace(".zip",""))
+         except:
+             print("dir didn't exist")
+    print(a)
+    return a
 
 class TestPredict(unittest.TestCase):
+
+    @classmethod
+    def tearDownClass(cls):
+        cleanup()
 
     def test_predict_01(self):
 
@@ -63,6 +79,11 @@ class TestPredict(unittest.TestCase):
 
 
 class TestTrain(unittest.TestCase):
+
+    @classmethod
+    def tearDownClass(cls):
+        cleanup()
+
 
     def test_fit_1(self):
         pdf = pd.DataFrame({
