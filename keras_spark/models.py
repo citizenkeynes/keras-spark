@@ -1,9 +1,11 @@
 import tensorflow as tf
 from keras_spark.core import PetaStormReader,KerasOnSparkPredict,PlainPythonReader
 import keras_spark
+import pyspark.sql.functions as F
 from pyspark.sql import DataFrame as SparkDataFrame
 from typing import Any, Dict
 import threading
+import random
 
 class KerasSparkModel(tf.keras.Model):
     """
@@ -43,33 +45,42 @@ class KerasSparkModel(tf.keras.Model):
         """
         if isinstance(x, SparkDataFrame):
 
-            dataset_container = []
+            nr_partitions = nr_partitions or x.rdd.getNumPartitions()
+            if x.rdd.getNumPartitions()<nr_partitions:
+                x = x.repartition(nr_partitions)
+
             # Convert Spark DataFrame to TensorFlow dataset using SparkDsTFDs adapter
-            def run_convert():
+            def run_convert(filter_parts):
+
                 adapter = getattr(keras_spark.core, "PetaStormReader")(self,reuse_cache=reuse_cache)
+
                 dataset = adapter.convert(
-                    x,
+                    x.filter(F.spark_partition_id().isin(*list(filter_parts))),
                     cache_path=cache_path,
-                    nr_partitions=nr_partitions or x.rdd.getNumPartitions(),
+                    nr_partitions=len(filter_parts),
                     nr_workers=nr_workers,
                     postpro_fn=postpro_fn,
                     batch_size=kwargs['batch_size']
                 )
-                dataset_container.append(dataset)
+                return dataset
 
-            # Create and start the thread
-            convert_thread = threading.Thread(target=run_convert)
-            convert_thread.start()
+            if  kwargs.get("validation_split") is not None:
+                parts = list(range(nr_partitions))
+                random.seed(123)
+                random.shuffle(parts)
 
-            # Optionally, wait for the thread to complete
-            convert_thread.join()
-            if dataset_container:
-                super(KerasSparkModel, self).fit(dataset_container[0], **kwargs)
+                val_partitions = parts[:int(nr_partitions* float(kwargs["validation_split"]))]
+                train_partitions = [p for p in range(nr_partitions) if p not in val_partitions]
+                val_dataset = run_convert(val_partitions)
+                train_dataset = run_convert(train_partitions)
+                return super(KerasSparkModel, self).fit(train_dataset,validation_data=val_dataset, **kwargs)
             else:
-                raise Exception("conversion has failed")
+                train_dataset = run_convert(range(nr_partitions))
+                return super(KerasSparkModel, self).fit(train_dataset, **kwargs)
+
         else:
             # Call the base class fit method directly if x is not a Spark DataFrame
-            super(KerasSparkModel, self).fit(x, y, **kwargs)
+            return super(KerasSparkModel, self).fit(x, y, **kwargs)
 
     def predict(self, x: Any,use_pyarrow=True,maxRecordsPerBatch=5000,**kwargs: Dict[str, Any]) -> Any:
         """

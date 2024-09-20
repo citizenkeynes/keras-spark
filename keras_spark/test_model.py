@@ -208,3 +208,32 @@ class TestTrain(unittest.TestCase):
         assert(
             list(tf.constant(pred_df.select("model_output.label").first()[0]).shape)==[10,2,1]
         )
+
+    def test_val_split(self):
+        pdf = pd.DataFrame({
+              "feature1": tf.random.normal([100]).numpy().tolist()
+            , "feature2": tf.random.normal([100]).numpy().tolist()
+            , "label": tf.cast(tf.random.normal([100]).numpy().tolist(), "int32")
+            , "partition_id": [int(i/10)  for i in range(100)]
+
+        })
+
+        spark_df = spark.createDataFrame(pdf)
+
+        strategy = tf.distribute.OneDeviceStrategy("cpu:0")
+
+        with strategy.scope():
+            inputs0 = tf.keras.Input(shape=[1], name="feature1")
+            inputs1 = tf.keras.Input(shape=[1], name="feature2", dtype="int32")
+            inputs = [inputs0, inputs1]
+            rec = lambda x: tf.keras.layers.Lambda(lambda x: tf.cast(x, "float32"))(x)
+            outputs = tf.keras.layers.Dense(1, activation="sigmoid")(
+                tf.keras.layers.Concatenate(-1)([rec(i) for i in inputs]))
+            outputs = tf.keras.layers.Lambda(lambda x: x, name="label")(outputs)
+            model = KerasSparkModel(inputs=inputs, outputs=outputs)
+            model.compile(optimizer='adam', loss='binary_crossentropy')
+
+        # Train the model using the Spark DataFrame
+        hist = model.fit(spark_df,nr_partitions=10, batch_size=10, epochs=10, reader_type="PetaStormReader", validation_split=0.5)
+
+        assert("val_loss" in hist.history.keys())
